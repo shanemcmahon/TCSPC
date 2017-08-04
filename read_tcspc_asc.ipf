@@ -158,9 +158,11 @@ abort "2D waves must have same dimensions"
 endif
 make /o Anisotropy
 for(i = 0;i < nColPar;i = i + 1)	// Initialize variables;continue test
-	duplicate /o /r=(FitMinT,FitMaxT)[i] ParWave,ParWave1D
+	// duplicate /o /r=(FitMinT,FitMaxT)[i] ParWave,ParWave1D
+	duplicate /o /r=(*)[i] ParWave,ParWave1D
 	Redimension /n=(numpnts(ParWave1D)) ParWave1D
-	duplicate /o /r=(FitMinT,FitMaxT)[i] PerpWave,PerpWave1D
+	// duplicate /o /r=(FitMinT,FitMaxT)[i] PerpWave,PerpWave1D
+	duplicate /o /r=(*)[i] PerpWave,PerpWave1D
 	Redimension /n=(numpnts(PerpWave1D)) PerpWave1D
 	CalculateAnisotropy(ParWave1D, PerpWave1D,BgPar,BgPerp,TACmax,FitMinT,FitMaxT,g,nSmooth)
 	if(!WaveExists($"Anisotropy2D"))
@@ -181,28 +183,83 @@ function CalculateAnisotropy(ParWave, PerpWave,BgPar,BgPerp,TACmax,FitMinT,FitMa
 		CalculateAnisotropy2D(ParWave, PerpWave,BgPar,BgPerp,TACmax,FitMinT,FitMaxT,g,nSmooth)
 		return(0)
 	endif
-	duplicate /o /r=(FitMinT,FitMaxT) ParWave, IparPD
-	duplicate /o /r=(FitMinT,FitMaxT), PerpWave, IperpPD
-	Loess/V=2/N=(nSmooth)/ORD=1 srcWave= IparPD
-	Loess/V=2/N=(nSmooth)/ORD=1 srcWave= IperpPD
+	// duplicate /o /r=(FitMinT,FitMaxT) ParWave, IparPD
+	// duplicate /o /r=(FitMinT,FitMaxT), PerpWave, IperpPD
+  make /o /n=2 wIndicator = {1,NaN}
+	duplicate /o ParWave, IparPD
+	duplicate /o PerpWave, IperpPD
+	duplicate /o IparPD,wTemp
+	wTemp = ((IparPD == 0) & (IperpPD == 0))
+	//IparPD = IParPD*wIndicator[wTemp[p]]
+	//IperpPD = IPerpPD*wIndicator[wTemp[p]]
+
+	killwaves /z wSmoothCoefs
+	make /o /n=(2*(nSmooth)+1) wSmoothCoefs
+	setscale /p x,(-nSmooth),1,wSmoothCoefs
+	wSmoothCoefs = exp(-(x)^2)
+	wavestats wSmoothCoefs
+	wSmoothCoefs = wSmoothCoefs/v_sum
+
+	Loess/V=2/N=(nSmooth)/ORD=2 srcWave= IparPD
+	// FilterFIR/E=2/COEF=wSmoothCoefs IparPD
+	Loess/V=2/N=(nSmooth)/ORD=2 srcWave= IperpPD
+	// FilterFIR/E=2/COEF=wSmoothCoefs IperpPD
+
 	IparPD = (IparPD - BgPar)
 	IperpPD = (IperpPD - BgPerp)
 
 	duplicate /o IparPD Anisotropy
 	Anisotropy = (IparPD - g*IperpPD)/(IparPD + 2*g*IperpPD)
-	//*temp
+end
 
-//	display Anisotropy
-//	K0 = 0;K1 = 0.6;K2 = 10;
-//	CurveFit/G/H="000"/TBOX=768 exp_XOffset Anisotropy /D
-//	ModifyGraph rgb(fit_Anisotropy)=(0,0,0)
+macro DoCleanUpAnisotropy(AnisotropyName, ParName, PerpName, ParBG, PerpBG)
+string AnisotropyName = "Anisotropy2D"
+string ParName = "Decay1x"
+string PerpName = "Decay2x"
+variable ParBG, PerpBG
+Prompt AnisotropyName,"Name of anisotropy data wave", popup, WaveList("*",";","" )
+Prompt ParName,"Name of parallel fluorescence component data wave", popup, WaveList("*",";","" )
+Prompt PerpName,"Name of perpendicular fluorescence component data wave", popup, WaveList("*",";","" )
+Prompt ParBG,"Dark count parallel detector"
+Prompt PerpBG,"Dark count perpendicular detector"
 
-//	v_flag = 1
-//	dowindow /f FitParTable
-//	if(!v_flag)
-//		edit /n=FitParTable
-//	endif
+CleanUpAnisotropy($AnisotropyName, $ParName, $PerpName,ParBG,PerpBG)
+endmacro
 
-//	AppendToTable  /w=FitParTable w_coef
+function CleanUpAnisotropy(wAnisotropy,wParallel,wPerp,vParBG,vPerpBG)
+wave wAnisotropy,wParallel,wPerp
+variable vParBG,vPerpBG
+duplicate /o wAnisotropy, wAnisotropyClean
+duplicate /o wAnisotropyClean, wTemp
+wTemp = ((wParallel > vParBG + 3*sqrt(wParallel)) & (wPerp > vPerpBG + 3*sqrt(wPerp))) // ((wParallel > vParBG + 3*sqrt(wParallel)) & (wPerp > vPerpBG + 3*sqrt(wPerp)))
+duplicate /o wTemp,wTemp2
+make /o /n=2 wIndicator = {NaN,1}
+wTemp2 = wTemp * wIndicator[wTemp[p][q]]
+wAnisotropyClean = wAnisotropy*wTemp2
 
+killwaves /z wSmoothCoefs
+make /o /n=5 wSmoothCoefs
+setscale /p x,(-(numpnts(wSmoothCoefs)-1)/2),1,wSmoothCoefs
+wSmoothCoefs = exp(-(x/0.5)^2)
+wavestats wSmoothCoefs
+wSmoothCoefs = wSmoothCoefs/v_sum
+
+Duplicate/O wAnisotropyClean,wAnisotropyClean_smth;DelayUpdate
+FilterFIR/E=2/COEF=wSmoothCoefs wAnisotropyClean_smth;DelayUpdate
+
+ variable ncols = DimSize(wAnisotropyClean_smth,1 )
+ variable nrows = DimSize(wAnisotropyClean_smth,0 )
+ variable i
+ for(i=0;i<ncols;i=i+1)	// Initialize variables;continue test
+  //make /o /n=nrows $("wAnisotropyClean_smth" + num2str(i))
+	duplicate /o /r=(*)[i] wAnisotropyClean_smth, $("wAnisotropyClean_smth" + num2str(i))
+	// wave AnisoI = $("wAnisotropyClean_smth" + num2str(i))
+	// setscale /p x,(DimOffset(wAnisotropyClean_smth, 0 )),(	DimDelta(wAnisotropyClean_smth, 0 )),AnisoI
+	Redimension /n=(-1,0) $("wAnisotropyClean_smth" + num2str(i))
+  endfor						// Execute body code until continue test is FALSE
+
+
+
+//Duplicate/O wAnisotropyAvg,wAnisotropyAvg_smth;DelayUpdate
+//FilterFIR/E=2/COEF=wSmoothCoefs wAnisotropyAvg_smth;DelayUpdate
 end
